@@ -1,9 +1,11 @@
-"""Guardrail Engine - Orchestrates guardrail execution."""
+"""Guardrail Engine - Orchestrates guardrail execution with fault tolerance."""
 
 import asyncio
 import logging
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
+from sentinel.core.circuit_breaker import CircuitBreaker, CircuitBreakerConfig, FailMode
+from sentinel.core.config import settings
 from sentinel.guardrails.base import GuardrailModule, GuardrailResponse
 
 logger = logging.getLogger(__name__)
@@ -42,10 +44,11 @@ def _get_meter():
 
 
 class GuardrailEngine:
-    """Orchestrates guardrail module execution.
+    """Orchestrates guardrail module execution with fault tolerance.
 
     Manages the pipeline for processing inbound prompts and outbound
-    completions through multiple guardrail modules.
+    completions through multiple guardrail modules. Includes circuit breaker
+    protection to handle timeouts and cascading failures gracefully.
     """
 
     def __init__(self) -> None:
@@ -53,12 +56,13 @@ class GuardrailEngine:
         self.modules: Dict[str, GuardrailModule] = {}
         self.module_priorities: Dict[str, int] = {}  # Track priorities
         self.module_order: List[str] = []
+        self.circuit_breakers: Dict[str, CircuitBreaker] = {}  # Per-module circuit breakers
         self._initialized = False
 
     def register_module(
         self, name: str, module: GuardrailModule, priority: int = 0
     ) -> None:
-        """Register a guardrail module.
+        """Register a guardrail module with circuit breaker protection.
 
         Args:
             name: Unique module identifier.
@@ -70,6 +74,22 @@ class GuardrailEngine:
 
         self.modules[name] = module
         self.module_priorities[name] = priority
+        
+        # Create circuit breaker for this module if enabled
+        if settings.circuit_breaker_enabled:
+            fail_mode = (
+                FailMode.FAIL_CLOSED
+                if settings.circuit_breaker_fail_mode == "fail_closed"
+                else FailMode.FAIL_OPEN
+            )
+            config = CircuitBreakerConfig(
+                failure_threshold=settings.circuit_breaker_failure_threshold,
+                recovery_timeout=settings.circuit_breaker_recovery_timeout,
+                success_threshold=settings.circuit_breaker_success_threshold,
+                timeout=settings.circuit_breaker_timeout,
+                fail_mode=fail_mode,
+            )
+            self.circuit_breakers[name] = CircuitBreaker(f"guardrail_{name}", config)
         
         # Sort by priority (descending), then by name for stability
         self.module_order = sorted(
@@ -108,7 +128,10 @@ class GuardrailEngine:
     async def validate_prompt(
         self, prompt: str, block_on_violation: bool = False
     ) -> Tuple[bool, str, Dict[str, Any]]:
-        """Validate inbound prompt through all modules.
+        """Validate inbound prompt through all modules with fault tolerance.
+
+        Includes circuit breaker protection to handle module timeouts and failures
+        gracefully. Behavior on failure depends on circuit_breaker_fail_mode setting.
 
         Args:
             prompt: Prompt text to validate.
@@ -128,7 +151,22 @@ class GuardrailEngine:
             for module_name in self.module_order:
                 module = self.modules[module_name]
                 try:
-                    response = await module.validate(current_text)
+                    # Use circuit breaker if enabled
+                    if settings.circuit_breaker_enabled and module_name in self.circuit_breakers:
+                        cb = self.circuit_breakers[module_name]
+                        # Default response if circuit fails (varies by fail_mode)
+                        default_response = GuardrailResponse(
+                            is_safe=True,  # FAIL_OPEN: assume safe
+                            content=current_text,
+                            metadata={"circuit_breaker": "open", "bypassed": True},
+                        )
+                        response = await cb.call(
+                            module.validate,
+                            current_text,
+                            default_value=default_response,
+                        )
+                    else:
+                        response = await module.validate(current_text)
 
                     metadata[module_name] = response.metadata
                     if response.violations:
@@ -145,11 +183,12 @@ class GuardrailEngine:
                             logger.warning(
                                 f"Prompt blocked by {module_name}: {response.violations}"
                             )
-                            return False, current_text, metadata
+                            return False, current_text, {"modules": metadata, "violations": violations}
 
                 except Exception as e:
                     logger.error(f"Error in {module_name}: {e}")
                     violations[module_name] = {"error": str(e)}
+                    # Continue processing other modules on error
 
             return is_safe_overall, current_text, {"modules": metadata, "violations": violations}
 
@@ -253,9 +292,31 @@ class GuardrailEngine:
         return self.module_order.copy()
 
     def get_stats(self) -> Dict[str, Any]:
-        """Get engine statistics."""
-        return {
+        """Get engine statistics including circuit breaker status.
+        
+        Returns:
+            Dictionary with initialization status, module counts, and circuit breaker health.
+        """
+        stats = {
             "initialized": self._initialized,
             "modules_count": len(self.modules),
             "modules": self.list_modules(),
         }
+        
+        # Include circuit breaker status if enabled
+        if settings.circuit_breaker_enabled:
+            stats["circuit_breakers"] = {
+                name: cb.status()
+                for name, cb in self.circuit_breakers.items()
+            }
+            stats["circuit_breaker_config"] = {
+                "enabled": True,
+                "fail_mode": settings.circuit_breaker_fail_mode,
+                "timeout": settings.circuit_breaker_timeout,
+                "failure_threshold": settings.circuit_breaker_failure_threshold,
+                "recovery_timeout": settings.circuit_breaker_recovery_timeout,
+            }
+        else:
+            stats["circuit_breaker_config"] = {"enabled": False}
+        
+        return stats

@@ -130,8 +130,18 @@ class GuardrailProxyMiddleware(BaseHTTPMiddleware):
         """
 
         async def stream_wrapper() -> AsyncGenerator[str, None]:
-            """Wrap stream with guardrail processing."""
-            buffer = ""  # Look-back buffer for split patterns
+            """Wrap stream with guardrail processing.
+            
+            Handles partial PII that spans chunk boundaries using a look-back buffer.
+            Example: Email "test@example.com" split as:
+              - Chunk 1: "...last chunk content test@exa"
+              - Chunk 2: "mple.com..."
+            
+            The look-back buffer (last N chars of previous chunk) ensures the email
+            is detected even though it spans two chunks.
+            """
+            buffer = ""  # Look-back buffer for split patterns (3-5 tokens)
+            buffer_size = settings.stream_buffer_size  # Keep last N chars for overlap
 
             async for chunk_raw in response.body_iterator:
                 try:
