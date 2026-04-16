@@ -1,7 +1,8 @@
-"""LLM Provider Client Service."""
+"""LLM Provider Client Service - Distributed tracing and header propagation."""
 
 import asyncio
 import logging
+import uuid
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
 import httpx
@@ -28,16 +29,18 @@ class LLMClient:
     streaming and non-streaming interfaces.
     """
 
-    def __init__(self, provider: str = "openai", timeout: float = 30.0):
+    def __init__(self, provider: str = "openai", timeout: float = 30.0, headers: Optional[Dict[str, str]] = None):
         """Initialize LLM client.
 
         Args:
             provider: LLM provider name (openai, gemini, anthropic).
             timeout: Request timeout in seconds.
+            headers: Optional dictionary of headers to propagate (X-Request-ID, traceparent, etc).
         """
         self.provider = provider.lower()
         self.timeout = timeout
         self.client = httpx.AsyncClient(timeout=timeout)
+        self.propagated_headers = headers or {}
         self._initialize_provider_config()
 
     def _initialize_provider_config(self) -> None:
@@ -64,33 +67,36 @@ class LLMClient:
         self,
         messages: List[Dict[str, str]],
         model: Optional[str] = None,
-        temperature: float = 0.7,
-        max_tokens: Optional[int] = None,
+        request_id: Optional[str] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
-        """Send non-streaming chat completion request.
+        """Send non-streaming chat completion request with distributed tracing.
 
         Args:
             messages: List of message dicts with role/content.
             model: Model to use (overrides default).
             temperature: Sampling temperature.
             max_tokens: Max tokens in response.
+            request_id: Request ID for distributed tracing.
             **kwargs: Additional provider-specific parameters.
 
         Returns:
             Completion response dict.
         """
         model = model or self.model
+        request_id = request_id or str(uuid.uuid4())
 
         if self.provider == "openai":
             return await self._openai_chat_completion(
-                messages, model, temperature, max_tokens, **kwargs
+                messages, model, temperature, max_tokens, request_id, **kwargs
             )
         elif self.provider == "gemini":
             return await self._gemini_chat_completion(
-                messages, model, temperature, max_tokens, **kwargs
+                messages, model, temperature, max_tokens, request_id, **kwargs
             )
         elif self.provider == "anthropic":
+            return await self._anthropic_chat_completion(
+                messages, model, temperature, max_tokens, request_id
             return await self._anthropic_chat_completion(
                 messages, model, temperature, max_tokens, **kwargs
             )
@@ -100,35 +106,38 @@ class LLMClient:
     async def stream_chat_completion(
         self,
         messages: List[Dict[str, str]],
-        model: Optional[str] = None,
-        temperature: float = 0.7,
-        max_tokens: Optional[int] = None,
+        request_id: Optional[str] = None,
         **kwargs: Any,
     ) -> AsyncGenerator[Dict[str, Any], None]:
-        """Send streaming chat completion request.
+        """Send streaming chat completion request with distributed tracing.
 
         Args:
             messages: List of message dicts with role/content.
             model: Model to use (overrides default).
             temperature: Sampling temperature.
             max_tokens: Max tokens in response.
+            request_id: Request ID for distributed tracing.
             **kwargs: Additional provider-specific parameters.
 
         Yields:
             Streaming response chunks.
         """
         model = model or self.model
+        request_id = request_id or str(uuid.uuid4())
 
         if self.provider == "openai":
             async for chunk in self._openai_stream(
-                messages, model, temperature, max_tokens, **kwargs
+                messages, model, temperature, max_tokens, request_id, **kwargs
             ):
                 yield chunk
         elif self.provider == "gemini":
             async for chunk in self._gemini_stream(
-                messages, model, temperature, max_tokens, **kwargs
+                messages, model, temperature, max_tokens, request_id, **kwargs
             ):
                 yield chunk
+        elif self.provider == "anthropic":
+            async for chunk in self._anthropic_stream(
+                messages, model, temperature, max_tokens, request_id
         elif self.provider == "anthropic":
             async for chunk in self._anthropic_stream(
                 messages, model, temperature, max_tokens, **kwargs
@@ -138,13 +147,18 @@ class LLMClient:
     async def _openai_chat_completion(
         self,
         messages: List[Dict[str, str]],
-        model: str,
-        temperature: float,
-        max_tokens: Optional[int],
+        request_id: str,
         **kwargs: Any,
     ) -> Dict[str, Any]:
-        """OpenAI chat completion request."""
+        """OpenAI chat completion request with tracing headers."""
         headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "X-Request-ID": request_id,
+        }
+        # Propagate distributed tracing headers if present
+        if "traceparent" in self.propagated_headers:
+            headers["traceparent"] = self.propagated_headers["traceparent"]eaders = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }

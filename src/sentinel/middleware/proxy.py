@@ -1,7 +1,15 @@
-"""Proxy Middleware - Request/Response interception with guardrails."""
+"""Proxy Middleware - Request/Response interception with guardrails.
+
+Features:
+- Distributed tracing via X-Request-ID and traceparent headers
+- Pydantic v2 optimized JSON validation (Rust-accelerated core)
+- Circuit breaker protection for guardrail modules
+- Zero Time-To-First-Token (TTFT) impact with streaming redaction
+"""
 
 import json
 import logging
+import uuid
 from typing import Any, AsyncGenerator, Callable, Dict, Optional
 
 from fastapi import Request
@@ -9,6 +17,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import StreamingResponse
 
 from sentinel.core.config import settings
+from sentinel.core.validators import validate_json_model
 from sentinel.guardrails.engine import GuardrailEngine
 
 logger = logging.getLogger(__name__)
@@ -44,6 +53,9 @@ class GuardrailProxyMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: Callable) -> Any:
         """Process request/response through guardrails.
 
+        Propagates distributed tracing headers (X-Request-ID, traceparent)
+        throughout the request lifecycle for full observability.
+
         Args:
             request: Incoming HTTP request.
             call_next: Next handler.
@@ -51,19 +63,38 @@ class GuardrailProxyMiddleware(BaseHTTPMiddleware):
         Returns:
             Response (streaming or non-streaming).
         """
+        # Extract or generate request ID for distributed tracing
+        request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
+        traceparent = request.headers.get("traceparent")
+        
+        # Store in request state for downstream use
+        request.state.request_id = request_id
+        request.state.traceparent = traceparent
+        
         # Skip guardrails for health checks
         if request.url.path in ["/health", "/metrics"]:
-            return await call_next(request)
+            response = await call_next(request)
+            # Add request ID to response headers
+            response.headers["x-request-id"] = request_id
+            return response
 
-        with _get_tracer().start_as_current_span("proxy_middleware") as span:
+        tracer = _get_tracer()
+        with tracer.start_as_current_span("proxy_middleware") as span:
             span.set_attribute("path", request.url.path)
             span.set_attribute("method", request.method)
+            span.set_attribute("request_id", request_id)
+            if traceparent:
+                span.set_attribute("traceparent", traceparent)
 
             # Only intercept POST requests with JSON bodies
             if request.method != "POST" or "application/json" not in request.headers.get(
                 "content-type", ""
             ):
-                return await call_next(request)
+                response = await call_next(request)
+                response.headers["x-request-id"] = request_id
+                if traceparent:
+                    response.headers["traceparent"] = traceparent
+                return response
 
             # 1. INBOUND GUARDRAIL - Validate prompt
             try:
@@ -88,12 +119,14 @@ class GuardrailProxyMiddleware(BaseHTTPMiddleware):
                             {
                                 "error": "Request blocked by security guardrails",
                                 "violations": validation_meta.get("violations", {}),
-                            },
-                            status_code=400,
-                        )
-
-                    # Update body with processed prompt
-                    body = self._update_messages_text(body, processed_prompt)
+                            "request_id": request_id,
+                        },
+                        status_code=400,
+                        headers={
+                            "x-request-id": request_id,
+                            **({"traceparent": traceparent} if traceparent else {}),
+                        },
+                return responses_text(body, processed_prompt)
 
             except json.JSONDecodeError:
                 logger.error("Failed to parse request body as JSON")
