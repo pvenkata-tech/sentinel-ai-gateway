@@ -790,18 +790,118 @@ docker stats <container-id>
 
 ---
 
+---
+
+## Monitoring with Grafana & Prometheus
+
+### Quick Start
+
+Access Grafana at `http://localhost:3000` with default credentials:
+- **Username:** admin
+- **Password:** admin
+
+⚠️ **Change password** on first login for production!
+
+### Pre-configured Components
+
+**Datasources:**
+- ✅ Prometheus: `http://prometheus:9090`
+- Refresh interval: 15 seconds
+
+**Pre-built Dashboard:**
+- Memory Usage, CPU Rate, GC Activity, Open FDs, Max FDs
+
+### Common PromQL Queries
+
+**Active Requests:**
+```promql
+increase(python_gc_collections_total[5m])
+```
+
+**Request Rate (per minute):**
+```promql
+rate(process_resident_memory_bytes[1m])
+```
+
+**CPU Usage Rate:**
+```promql
+rate(process_cpu_seconds_total[5m])
+```
+
+**Memory Usage:**
+```promql
+process_resident_memory_bytes / 1024 / 1024  # MB
+```
+
+**Open File Descriptors:**
+```promql
+process_open_fds / process_max_fds * 100  # Percentage
+```
+
+### Monitoring Checklist
+
+**Daily Checks:**
+- [ ] Check error rate (should be < 1%)
+- [ ] Verify average response time (< 1s typical)
+- [ ] Monitor memory usage (should be stable)
+- [ ] Check CPU usage (should not be constantly high)
+
+**Weekly Reviews:**
+- [ ] Analyze performance trends
+- [ ] Identify resource bottlenecks
+- [ ] Review error logs
+
+**Monthly:**
+- [ ] Archive old metrics data
+- [ ] Review and update alert thresholds
+- [ ] Capacity planning for growth
+
+### Troubleshooting Monitoring
+
+**"No Data" in Grafana:**
+1. Check Prometheus: `http://localhost:9090`
+2. Verify metrics endpoint: `curl http://localhost:8000/metrics`
+3. Check Prometheus targets page for scrape health
+4. Wait 30s for metrics to propagate
+
+**Can't Login to Grafana:**
+1. Verify Grafana running: `docker ps | grep grafana`
+2. Check credentials are "admin/admin"
+3. Reset: `docker-compose restart grafana`
+
+**Prometheus Not Scraping:**
+1. Check configuration: `prometheus.yml` line 7
+2. Verify target: `sentinel-gateway:8000` (not 8001)
+3. Verify `/metrics` returns Prometheus format (text/plain)
+4. Check Prometheus targets page: `http://localhost:9090/targets`
+
+### Key Metrics to Watch
+
+**Healthy System:**
+- Memory: Stable (~300-500MB)
+- CPU: < 50% average
+- GC Collections: Periodic (few per minute)
+- Open FDs: < 100
+
+**Warning Signs:**
+- Memory: Growing continuously (leak)
+- CPU: Constant 80%+ (overloaded)
+- Open FDs: > 1000 (resource exhaustion)
+- Prometheus scrape failures
+
+---
+
 ## Getting Help
 
-1. **Check logs:** `python -m uvicorn sentinel.main:app --log-level=DEBUG`
+1. **Check logs:** `docker logs -f sentinel-gateway-1`
 2. **Test endpoint:** `curl http://localhost:8000/health`
-3. **Review docs:** See [Setup Guide](./SETUP.md) and [Architecture](./ARCHITECTURE.md)
-4. **Check examples:** See [Examples](./EXAMPLES.md)
-5. **Run tests:** `pytest tests/ -vv`
+3. **View metrics:** `curl http://localhost:8000/metrics`
+4. **Review docs:** See [Quick Start](./QUICKSTART.md) and [Architecture](./ARCHITECTURE.md)
+5. **Run tests:** `pytest tests/ -v`
 
 ---
 
 For more information, see:
-- [Setup Guide](./SETUP.md) — Installation and configuration
-- [Architecture](./ARCHITECTURE.md) — System design
+- [Quick Start](./QUICKSTART.md) — Installation and configuration
+- [Architecture](./ARCHITECTURE.md) — System design and guardrails
 - [API Reference](./API.md) — Endpoint documentation
-- [Examples](./EXAMPLES.md) — Code samples

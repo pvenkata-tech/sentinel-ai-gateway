@@ -8,12 +8,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy pyproject.toml and install dependencies
+# Copy project files
+COPY README.md .
 COPY pyproject.toml .
-RUN pip install --no-cache-dir -e .
-
-# Copy application code
 COPY src/ src/
+
+# Install dependencies
+RUN pip install --no-cache-dir -e .
 
 # Download spaCy model for NER
 RUN python -m spacy download en_core_web_sm

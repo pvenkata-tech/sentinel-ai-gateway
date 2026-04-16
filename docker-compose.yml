@@ -10,10 +10,7 @@ services:
     environment:
       - ENVIRONMENT=development
       - LOG_LEVEL=INFO
-      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
-      - PROMETHEUS_PORT=9090
-    depends_on:
-      - otel-collector
+      - OTEL_ENABLED=false
     networks:
       - sentinel-network
     healthcheck:
@@ -50,6 +47,24 @@ services:
       - "16686:16686"
     networks:
       - sentinel-network
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      - grafana-storage:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - sentinel-network
+
+volumes:
+  grafana-storage:
 
 networks:
   sentinel-network:

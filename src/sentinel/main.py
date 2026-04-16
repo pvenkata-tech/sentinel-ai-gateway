@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from sentinel.core.config import settings
 from sentinel.core.telemetry import telemetry_manager
@@ -130,13 +130,13 @@ async def health_check() -> JSONResponse:
 
 
 @app.get("/metrics", tags=["Metrics"])
-async def metrics() -> JSONResponse:
+async def metrics() -> Response:
     """Prometheus metrics endpoint."""
     try:
         from prometheus_client import REGISTRY, generate_latest
 
         metrics_output = generate_latest(REGISTRY).decode("utf-8")
-        return JSONResponse({"metrics": metrics_output})
+        return Response(content=metrics_output, media_type="text/plain; charset=utf-8")
     except Exception as e:
         logger.error(f"Failed to generate metrics: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)

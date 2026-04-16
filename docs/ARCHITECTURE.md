@@ -470,4 +470,114 @@ Example:
 
 ---
 
-For implementation details, see [API Reference](./API.md) and [Examples](./EXAMPLES.md).
+## Guardrails Configuration
+
+### PII Redaction Module
+
+**Supported Patterns:**
+
+| Pattern | Example | Redaction |
+|---------|---------|-----------|
+| `EMAIL` | john@example.com | REDACTED_EMAIL |
+| `PHONE` | +1-555-123-4567 | REDACTED_PHONE |
+| `SSN` | 123-45-6789 | REDACTED_SSN |
+| `CREDIT_CARD` | 4532-1234-5678-9012 | REDACTED_CREDIT_CARD |
+| `ZIP_CODE` | 12345 | REDACTED_ZIP_CODE |
+| `IP_ADDRESS` | 192.168.1.1 | REDACTED_IP_ADDRESS |
+
+**Configuration:**
+
+```env
+ENABLE_PII_REDACTION=true
+PII_DETECTION_MODEL=en_core_web_sm  # or en_core_web_lg
+REGEX_PII_PATTERNS=true
+```
+
+**Performance Tuning:**
+
+- **Regex only:** 1-2ms (development, high throughput)
+- **Hybrid (regex + Presidio):** 50-200ms (production, comprehensive)
+- Recommended: Enable both for production
+
+### Injection Detection Module
+
+**Supported Patterns:**
+
+| Pattern | Severity | Examples |
+|---------|----------|----------|
+| `SQL_INJECTION` | 1.0 | DROP TABLE, DELETE FROM, UNION SELECT |
+| `COMMAND_INJECTION` | 0.8 | ; rm -rf, \|\| cat, && shutdown |
+| `JAILBREAK` | 0.9 | Ignore previous, System prompt |
+| `LDAP_INJECTION` | 0.7 | *)(uid=, *)(&(uid= |
+| `XML_INJECTION` | 0.7 | <!DOCTYPE, <![CDATA[ |
+| `TEMPLATE_INJECTION` | 0.8 | {{7*7}}, ${command} |
+
+**Configuration:**
+
+```env
+ENABLE_PROMPT_INJECTION_DETECTION=true
+```
+
+**Threshold Tuning:**
+
+| Threshold | Behavior | Best For |
+|-----------|----------|----------|
+| 0.3 | Very Strict | Security-critical |
+| 0.5 | Balanced | Production (default) |
+| 0.7 | Lenient | High false-positive tolerance |
+
+### Custom Guardrail Module
+
+Create custom modules by inheriting from `GuardrailModule`:
+
+```python
+from sentinel.guardrails.base import GuardrailModule, GuardrailResponse
+
+class MyCustomModule(GuardrailModule):
+    async def validate(self, text: str) -> GuardrailResponse:
+        violations = {}
+        # Your detection logic here
+        return GuardrailResponse(
+            is_safe=len(violations) == 0,
+            processed_text=text,
+            violations={"my_module": violations} if violations else {}
+        )
+    
+    async def validate_streaming_chunk(self, chunk: str, buffer: str) -> GuardrailResponse:
+        # Handle streaming with look-back buffer
+        return await self.validate(buffer + chunk)
+    
+    def setup(self): pass
+    def shutdown(self): pass
+```
+
+Register in `src/sentinel/main.py`:
+
+```python
+custom = MyCustomModule()
+guardrail_engine.register_module("my_custom", custom, priority=0)
+```
+
+### Module Priority System
+
+Modules execute in priority order (highest first):
+
+```
+Priority 2: PII Redaction       (fast, essential)
+Priority 1: Injection Detection (security critical)
+Priority 0: Custom Module       (business logic)
+```
+
+### Best Practices
+
+1. **Always enable PII redaction** in production
+2. **Test injection patterns** extensively before deployment
+3. **Monitor metrics** for false positives and patterns
+4. **Adjust thresholds per environment** (strict prod, lenient dev)
+5. **Use streaming validation** for large responses
+6. **Combine modules** for defense in depth
+7. **Document custom modules** with usage examples
+
+---
+
+For implementation details, see [API Reference](./API.md). For troubleshooting, see [Troubleshooting Guide](./TROUBLESHOOTING.md).
