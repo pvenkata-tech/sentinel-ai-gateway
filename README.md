@@ -1,6 +1,6 @@
 # sentinel-ai-gateway
 
-Production-grade security middleware for LLM applications. Automatically redacts PII, blocks prompt injections, and monitors all requests with zero code changes.
+A high-performance observability proxy that intercepts LLM traffic to enforce guardrails and redact sensitive data in real-time.
 
 ![Sentinel Architecture](./docs/architecture-diagram.svg)
 
